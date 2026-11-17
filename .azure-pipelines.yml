@@ -1,0 +1,74 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+      - feature/*
+
+# Agent auto-hébergé installé sur la VM du TP1
+pool:
+  name: Default
+
+stages:
+  - stage: CI
+    displayName: "Terraform CI (dev & prod)"
+    jobs:
+      - job: terraform_ci
+        displayName: "fmt, validate, plan"
+        steps:
+          - checkout: self
+            clean: true
+
+          # Étape 1 — Installation de Terraform
+          - task: Bash@3
+            displayName: "Install Terraform 1.9.5"
+            inputs:
+              targetType: inline
+              script: |
+                set -e
+                TF_VERSION=1.9.5
+                if ! terraform -version 2>/dev/null | grep -q "v${TF_VERSION}"; then
+                  sudo apt-get install -y wget unzip
+                  cd /tmp
+                  wget -q -O tf.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
+                  unzip -o tf.zip
+                  sudo mv terraform /usr/local/bin/terraform
+                fi
+                terraform -version
+
+          # Étape 2 — Vérification du format
+          - script: |
+              echo "Vérification du format Terraform..."
+              terraform fmt -recursive -check
+            displayName: "terraform fmt -check"
+
+          # Étape 3 — Validation
+          - script: |
+              echo "Validation des fichiers Terraform..."
+              terraform init -backend=false -input=false
+              terraform validate
+            displayName: "terraform init (no backend) & validate"
+
+          # Étape 4 — Plans dev et prod avec workspaces
+          - script: |
+              echo "=== PLAN DEV ==="
+              terraform init -input=false
+              terraform workspace select dev || terraform workspace new dev
+              terraform plan -input=false -refresh=false -no-color -var-file=envs/dev.tfvars -out=tfplan-dev
+              echo "=== PLAN PROD ==="
+              terraform workspace select prod || terraform workspace new prod
+              terraform plan -input=false -refresh=false -no-color -var-file=envs/prod.tfvars -out=tfplan-prod
+            displayName: "terraform plan (dev & prod)"
+            continueOnError: true
+
+          # Étape 5 — Publication des plans
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish plan artifacts"
+            inputs:
+              pathtoPublish: "."
+              artifactName: "tfplans"
+            condition: succeededOrFailed()
